@@ -12,7 +12,7 @@ from tkinter import ttk, messagebox, filedialog
 
 
 APP_NAME = "Vocabulary"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0-dev"
 
 
 def get_app_data_dir():
@@ -196,6 +196,8 @@ class VocabularyApp(tk.Tk):
             ttk.Style().theme_use("aqua")
         except tk.TclError:
             pass
+
+        self.editing_id = None
 
         self.create_widgets()
         self.refresh_all()
@@ -473,12 +475,26 @@ class VocabularyApp(tk.Tk):
             pady=(15, 18)
         )
 
-        ttk.Button(
+        self.save_button = ttk.Button(
             button_frame,
             text="保存",
             command=self.save_item
-        ).pack(
+        )
+
+        self.save_button.pack(
             side="left"
+        )
+
+        self.cancel_edit_button = ttk.Button(
+            button_frame,
+            text="取消编辑",
+            command=self.cancel_edit,
+            state="disabled"
+        )
+
+        self.cancel_edit_button.pack(
+            side="left",
+            padx=8
         )
 
         ttk.Button(
@@ -599,6 +615,11 @@ class VocabularyApp(tk.Tk):
             yscrollcommand=scrollbar.set
         )
 
+        self.tree.bind(
+            "<Double-1>",
+            self.begin_edit
+        )
+
         self.tree.grid(
             row=0,
             column=0,
@@ -714,6 +735,19 @@ class VocabularyApp(tk.Tk):
         now = datetime.now().isoformat(
             timespec="seconds"
         )
+
+        if self.editing_id is not None:
+            self.update_item(
+                item_type=item_type,
+                english=english,
+                chinese=chinese,
+                source=source,
+                chapter=chapter,
+                page=page,
+                context=context,
+                now=now
+            )
+            return
 
         with connect() as conn:
             existing = conn.execute("""
@@ -849,11 +883,211 @@ class VocabularyApp(tk.Tk):
             keep_chapter=True
         )
 
+    def begin_edit(self, event=None):
+        selection = self.tree.selection()
+
+        if not selection:
+            return
+
+        record_id = int(selection[0])
+
+        with connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM vocabulary
+                WHERE id = ?
+                """,
+                (record_id,)
+            ).fetchone()
+
+        if row is None:
+            messagebox.showwarning(
+                "记录不存在",
+                "这条记录可能已经不存在。"
+            )
+            self.refresh_all()
+            return
+
+        type_map = {
+            "word": "Word",
+            "phrase": "Phrase",
+            "sentence": "Sentence"
+        }
+
+        self.editing_id = record_id
+
+        self.english_var.set(
+            row["english"] or ""
+        )
+
+        self.chinese_var.set(
+            row["chinese"] or ""
+        )
+
+        self.type_var.set(
+            type_map.get(
+                row["item_type"],
+                "Word"
+            )
+        )
+
+        self.source_var.set(
+            row["source"] or ""
+        )
+
+        self.chapter_var.set(
+            row["chapter"] or ""
+        )
+
+        self.page_var.set(
+            row["page"] or ""
+        )
+
+        self.context_text.delete(
+            "1.0",
+            "end"
+        )
+
+        self.context_text.insert(
+            "1.0",
+            row["context"] or ""
+        )
+
+        self.save_button.configure(
+            text="更新记录"
+        )
+
+        self.cancel_edit_button.configure(
+            state="normal"
+        )
+
+        self.status_var.set(
+            f"正在编辑 #{record_id}"
+            f"  ·  {row['english']}"
+            "  ·  修改不会增加遇到次数"
+        )
+
+        self.english_entry.focus_set()
+
+
+    def update_item(
+        self,
+        *,
+        item_type,
+        english,
+        chinese,
+        source,
+        chapter,
+        page,
+        context,
+        now
+    ):
+        record_id = self.editing_id
+
+        with connect() as conn:
+
+            duplicate = conn.execute(
+                """
+                SELECT id
+                FROM vocabulary
+
+                WHERE id != ?
+                  AND item_type = ?
+                  AND LOWER(TRIM(english))
+                      = LOWER(TRIM(?))
+
+                LIMIT 1
+                """,
+                (
+                    record_id,
+                    item_type,
+                    english
+                )
+            ).fetchone()
+
+            if duplicate:
+                messagebox.showwarning(
+                    "存在重复记录",
+                    (
+                        f"已经存在另一条相同类型的"
+                        f"“{english}”。\n\n"
+                        "请修改英文内容，"
+                        "或取消本次编辑。"
+                    )
+                )
+                return
+
+            conn.execute(
+                """
+                UPDATE vocabulary
+
+                SET
+                    item_type = ?,
+                    english = ?,
+                    chinese = ?,
+                    source = ?,
+                    chapter = ?,
+                    page = ?,
+                    context = ?,
+                    updated_at = ?
+
+                WHERE id = ?
+                """,
+                (
+                    item_type,
+                    english,
+                    chinese,
+                    source,
+                    chapter,
+                    page,
+                    context,
+                    now,
+                    record_id
+                )
+            )
+
+        messagebox.showinfo(
+            "更新成功",
+            (
+                f"{english}\n\n"
+                "记录已经更新。\n"
+                "遇到次数保持不变。"
+            )
+        )
+
+        self.clear_form()
+        self.refresh_all()
+
+
+    def cancel_edit(self):
+        self.clear_form()
+        self.refresh_all()
+
+
     def clear_form(
         self,
         keep_source=False,
         keep_chapter=False
     ):
+        self.editing_id = None
+
+        if hasattr(
+            self,
+            "save_button"
+        ):
+            self.save_button.configure(
+                text="保存"
+            )
+
+        if hasattr(
+            self,
+            "cancel_edit_button"
+        ):
+            self.cancel_edit_button.configure(
+                state="disabled"
+            )
+
         source = (
             self.source_var.get()
             if keep_source
@@ -891,6 +1125,7 @@ class VocabularyApp(tk.Tk):
         with connect() as conn:
             rows = conn.execute("""
                 SELECT
+                    id,
                     english,
                     chinese,
                     item_type,
@@ -908,6 +1143,7 @@ class VocabularyApp(tk.Tk):
             self.tree.insert(
                 "",
                 "end",
+                iid=str(row["id"]),
                 values=(
                     row["english"],
                     row["chinese"] or "",
