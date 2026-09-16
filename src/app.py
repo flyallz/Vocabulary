@@ -144,6 +144,7 @@ def init_db():
             "review_count": "INTEGER DEFAULT 0",
             "times_asked": "INTEGER DEFAULT 1",
             "notes": "TEXT",
+            "deleted_at": "TEXT",
         }
 
         for column, definition in required_columns.items():
@@ -497,6 +498,18 @@ class VocabularyApp(tk.Tk):
             padx=8
         )
 
+        self.delete_button = ttk.Button(
+            button_frame,
+            text="移入回收站",
+            command=self.move_to_trash,
+            state="disabled"
+        )
+
+        self.delete_button.pack(
+            side="left",
+            padx=8
+        )
+
         ttk.Button(
             button_frame,
             text="清空",
@@ -523,6 +536,15 @@ class VocabularyApp(tk.Tk):
             command=self.export_csv
         ).pack(
             side="right"
+        )
+
+        ttk.Button(
+            button_frame,
+            text="回收站",
+            command=self.open_trash
+        ).pack(
+            side="right",
+            padx=8
         )
 
         # Recent records + search
@@ -1019,6 +1041,10 @@ class VocabularyApp(tk.Tk):
             state="normal"
         )
 
+        self.delete_button.configure(
+            state="normal"
+        )
+
         self.status_var.set(
             f"正在编辑 #{record_id}"
             f"  ·  {row['english']}"
@@ -1122,6 +1148,318 @@ class VocabularyApp(tk.Tk):
         self.refresh_all()
 
 
+    def move_to_trash(self):
+        if self.editing_id is None:
+            return
+
+        english = (
+            self.english_var
+            .get()
+            .strip()
+        )
+
+        confirmed = messagebox.askyesno(
+            "移入回收站",
+            (
+                f"确定要将“{english}”"
+                "移入回收站吗？\n\n"
+                "之后可以恢复。"
+            )
+        )
+
+        if not confirmed:
+            return
+
+        now = datetime.now().isoformat(
+            timespec="seconds"
+        )
+
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE vocabulary
+                SET
+                    deleted_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    now,
+                    self.editing_id
+                )
+            )
+
+        self.clear_form()
+        self.refresh_all()
+
+        messagebox.showinfo(
+            "已移入回收站",
+            f"{english}\n\n可以从回收站恢复。"
+        )
+
+
+    def open_trash(self):
+        window = tk.Toplevel(self)
+        window.title("Vocabulary 回收站")
+        window.geometry("760x420")
+        window.minsize(650, 350)
+
+        frame = ttk.Frame(
+            window,
+            padding=16
+        )
+
+        frame.pack(
+            fill="both",
+            expand=True
+        )
+
+        frame.columnconfigure(
+            0,
+            weight=1
+        )
+
+        frame.rowconfigure(
+            1,
+            weight=1
+        )
+
+        ttk.Label(
+            frame,
+            text="回收站",
+            font=(
+                "Helvetica",
+                18,
+                "bold"
+            )
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=(0, 12)
+        )
+
+        columns = (
+            "english",
+            "chinese",
+            "type",
+            "deleted"
+        )
+
+        tree = ttk.Treeview(
+            frame,
+            columns=columns,
+            show="headings"
+        )
+
+        tree.heading(
+            "english",
+            text="English"
+        )
+
+        tree.heading(
+            "chinese",
+            text="中文"
+        )
+
+        tree.heading(
+            "type",
+            text="Type"
+        )
+
+        tree.heading(
+            "deleted",
+            text="删除时间"
+        )
+
+        tree.column(
+            "english",
+            width=190
+        )
+
+        tree.column(
+            "chinese",
+            width=190
+        )
+
+        tree.column(
+            "type",
+            width=90
+        )
+
+        tree.column(
+            "deleted",
+            width=180
+        )
+
+        tree.grid(
+            row=1,
+            column=0,
+            sticky="nsew"
+        )
+
+        scrollbar = ttk.Scrollbar(
+            frame,
+            orient="vertical",
+            command=tree.yview
+        )
+
+        scrollbar.grid(
+            row=1,
+            column=1,
+            sticky="ns"
+        )
+
+        tree.configure(
+            yscrollcommand=scrollbar.set
+        )
+
+        def refresh_trash():
+            for item in tree.get_children():
+                tree.delete(item)
+
+            with connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        id,
+                        english,
+                        chinese,
+                        item_type,
+                        deleted_at
+                    FROM vocabulary
+                    WHERE deleted_at IS NOT NULL
+                    ORDER BY deleted_at DESC
+                    """
+                ).fetchall()
+
+            for row in rows:
+                tree.insert(
+                    "",
+                    "end",
+                    iid=str(row["id"]),
+                    values=(
+                        row["english"],
+                        row["chinese"] or "",
+                        row["item_type"],
+                        row["deleted_at"] or ""
+                    )
+                )
+
+        def restore_selected():
+            selection = tree.selection()
+
+            if not selection:
+                messagebox.showwarning(
+                    "请选择记录",
+                    "请先选择要恢复的词条。",
+                    parent=window
+                )
+                return
+
+            record_id = int(selection[0])
+
+            with connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM vocabulary
+                    WHERE id = ?
+                    """,
+                    (record_id,)
+                ).fetchone()
+
+                if row is None:
+                    refresh_trash()
+                    return
+
+                duplicate = conn.execute(
+                    """
+                    SELECT id
+                    FROM vocabulary
+                    WHERE deleted_at IS NULL
+                      AND id != ?
+                      AND item_type = ?
+                      AND LOWER(TRIM(english))
+                          = LOWER(TRIM(?))
+                    LIMIT 1
+                    """,
+                    (
+                        record_id,
+                        row["item_type"],
+                        row["english"]
+                    )
+                ).fetchone()
+
+                if duplicate:
+                    messagebox.showwarning(
+                        "无法恢复",
+                        (
+                            "当前词库中已经存在同名、"
+                            "同类型的词条。\n\n"
+                            "请先处理现有记录。"
+                        ),
+                        parent=window
+                    )
+                    return
+
+                now = datetime.now().isoformat(
+                    timespec="seconds"
+                )
+
+                conn.execute(
+                    """
+                    UPDATE vocabulary
+                    SET
+                        deleted_at = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        record_id
+                    )
+                )
+
+            refresh_trash()
+            self.refresh_all()
+
+            messagebox.showinfo(
+                "恢复成功",
+                f"{row['english']} 已恢复。",
+                parent=window
+            )
+
+        controls = ttk.Frame(frame)
+
+        controls.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(12, 0)
+        )
+
+        ttk.Button(
+            controls,
+            text="恢复选中词条",
+            command=restore_selected
+        ).pack(
+            side="left"
+        )
+
+        ttk.Button(
+            controls,
+            text="关闭",
+            command=window.destroy
+        ).pack(
+            side="right"
+        )
+
+        refresh_trash()
+
+
     def clear_form(
         self,
         keep_source=False,
@@ -1142,6 +1480,14 @@ class VocabularyApp(tk.Tk):
             "cancel_edit_button"
         ):
             self.cancel_edit_button.configure(
+                state="disabled"
+            )
+
+        if hasattr(
+            self,
+            "delete_button"
+        ):
+            self.delete_button.configure(
                 state="disabled"
             )
 
@@ -1215,7 +1561,8 @@ class VocabularyApp(tk.Tk):
 
                     FROM vocabulary
 
-                    WHERE
+                    WHERE deleted_at IS NULL
+                      AND (
                         COALESCE(
                             english,
                             ''
@@ -1235,6 +1582,7 @@ class VocabularyApp(tk.Tk):
                             chapter,
                             ''
                         ) LIKE ? COLLATE NOCASE
+                      )
 
                     ORDER BY id DESC
                     LIMIT 100
@@ -1260,6 +1608,7 @@ class VocabularyApp(tk.Tk):
                         chapter
 
                     FROM vocabulary
+                    WHERE deleted_at IS NULL
 
                     ORDER BY id DESC
                     LIMIT 100
@@ -1288,6 +1637,7 @@ class VocabularyApp(tk.Tk):
                 """
                 SELECT COUNT(*)
                 FROM vocabulary
+                WHERE deleted_at IS NULL
                 """
             ).fetchone()[0]
 
@@ -1295,7 +1645,8 @@ class VocabularyApp(tk.Tk):
                 """
                 SELECT COUNT(*)
                 FROM vocabulary
-                WHERE COALESCE(
+                WHERE deleted_at IS NULL
+                  AND COALESCE(
                     times_asked,
                     1
                 ) >= 2
