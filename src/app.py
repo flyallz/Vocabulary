@@ -12,7 +12,7 @@ from tkinter import ttk, messagebox, filedialog
 
 
 APP_NAME = "Vocabulary"
-APP_VERSION = "1.1.0-dev"
+APP_VERSION = "1.1.0"
 
 
 def get_app_data_dir():
