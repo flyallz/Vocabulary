@@ -525,9 +525,24 @@ class VocabularyApp(tk.Tk):
             side="right"
         )
 
-        # Recent records
+        # Recent records + search
+        history_header = ttk.Frame(main)
+
+        history_header.grid(
+            row=9,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(0, 8)
+        )
+
+        history_header.columnconfigure(
+            1,
+            weight=1
+        )
+
         ttk.Label(
-            main,
+            history_header,
             text="最近记录",
             font=(
                 "Helvetica",
@@ -535,11 +550,53 @@ class VocabularyApp(tk.Tk):
                 "bold"
             )
         ).grid(
-            row=9,
+            row=0,
             column=0,
-            columnspan=3,
-            sticky="w",
-            pady=(0, 8)
+            sticky="w"
+        )
+
+        search_frame = ttk.Frame(
+            history_header
+        )
+
+        search_frame.grid(
+            row=0,
+            column=1,
+            sticky="e"
+        )
+
+        ttk.Label(
+            search_frame,
+            text="搜索"
+        ).pack(
+            side="left",
+            padx=(0, 8)
+        )
+
+        self.search_var = tk.StringVar()
+
+        self.search_entry = ttk.Entry(
+            search_frame,
+            textvariable=self.search_var,
+            width=28
+        )
+
+        self.search_entry.pack(
+            side="left"
+        )
+
+        self.search_entry.bind(
+            "<KeyRelease>",
+            lambda event: self.refresh_history()
+        )
+
+        ttk.Button(
+            search_frame,
+            text="清除",
+            command=self.clear_search
+        ).pack(
+            side="left",
+            padx=(8, 0)
         )
 
         history_frame = ttk.Frame(main)
@@ -1114,6 +1171,12 @@ class VocabularyApp(tk.Tk):
 
         self.english_entry.focus_set()
 
+    def clear_search(self):
+        self.search_var.set("")
+        self.refresh_history()
+        self.search_entry.focus_set()
+
+
     def refresh_all(self):
         self.refresh_history()
         self.refresh_stats()
@@ -1122,22 +1185,86 @@ class VocabularyApp(tk.Tk):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
+        keyword = ""
+
+        if hasattr(
+            self,
+            "search_var"
+        ):
+            keyword = (
+                self.search_var
+                .get()
+                .strip()
+            )
+
         with connect() as conn:
-            rows = conn.execute("""
-                SELECT
-                    id,
-                    english,
-                    chinese,
-                    item_type,
-                    times_asked,
-                    source,
-                    chapter
 
-                FROM vocabulary
+            if keyword:
+                pattern = f"%{keyword}%"
 
-                ORDER BY id DESC
-                LIMIT 100
-            """).fetchall()
+                rows = conn.execute(
+                    """
+                    SELECT
+                        id,
+                        english,
+                        chinese,
+                        item_type,
+                        times_asked,
+                        source,
+                        chapter
+
+                    FROM vocabulary
+
+                    WHERE
+                        COALESCE(
+                            english,
+                            ''
+                        ) LIKE ? COLLATE NOCASE
+
+                        OR COALESCE(
+                            chinese,
+                            ''
+                        ) LIKE ? COLLATE NOCASE
+
+                        OR COALESCE(
+                            source,
+                            ''
+                        ) LIKE ? COLLATE NOCASE
+
+                        OR COALESCE(
+                            chapter,
+                            ''
+                        ) LIKE ? COLLATE NOCASE
+
+                    ORDER BY id DESC
+                    LIMIT 100
+                    """,
+                    (
+                        pattern,
+                        pattern,
+                        pattern,
+                        pattern
+                    )
+                ).fetchall()
+
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        id,
+                        english,
+                        chinese,
+                        item_type,
+                        times_asked,
+                        source,
+                        chapter
+
+                    FROM vocabulary
+
+                    ORDER BY id DESC
+                    LIMIT 100
+                    """
+                ).fetchall()
 
         for row in rows:
             self.tree.insert(
@@ -1153,6 +1280,7 @@ class VocabularyApp(tk.Tk):
                     row["chapter"] or ""
                 )
             )
+
 
     def refresh_stats(self):
         with connect() as conn:
